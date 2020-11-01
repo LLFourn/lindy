@@ -1,6 +1,8 @@
 #![feature(async_closure)]
 use anyhow::Context;
 use futures::StreamExt;
+use lindy::keychain::KeyChain;
+use lindy::p2p::conn::Connector;
 use lindy::p2p::event::Event;
 use lindy::p2p::event::EventHandler;
 use lindy::Config;
@@ -31,11 +33,21 @@ async fn main() -> anyhow::Result<()> {
             .context(format!("Failed to parse {}", opt.config.to_str().unwrap()))?
     };
 
-    let (event_handler_loop, event_sender) = EventHandler::start();
+    let keychain = KeyChain::new(config.seed);
+    let local_key = keychain.node_keypair().public_key.to_xonly();
+
+
+    let connector = Connector {
+        local_key
+    };
+
+    let (event_handler_loop, event_sender) = EventHandler::start(connector, async move |peer_id, message| {
+        info!("got message from {}: {}", peer_id, message.message);
+    });
 
     info!("starting p2p on: {}", config.lindy_p2p.listen);
 
-    let p2p_listen_loop = lindy::p2p::conn::listen(config.lindy_p2p.listen)
+    let p2p_listen_loop = lindy::p2p::conn::listen(local_key, config.lindy_p2p.listen)
         .await?
         .map(|item| Ok(Event::from(item)))
         .forward(event_sender.clone());

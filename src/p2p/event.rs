@@ -11,13 +11,15 @@ use std::collections::HashMap;
 use std::pin::Pin;
 
 use super::conn;
+use super::conn::Connector;
+use super::conn::Peer;
 
 pub type PeerSink = Pin<Box<dyn Sink<Message, Error = conn::Error> + Send + 'static>>;
 pub type PeerStream = Pin<Box<dyn Stream<Item = Message> + Send + 'static>>;
 
 pub enum Event {
     ConnectionEstablished {
-        peer_id: PeerId,
+        peer: Peer,
         incoming: PeerStream,
         outgoing: PeerSink,
     },
@@ -34,22 +36,22 @@ pub enum Event {
         message: (Message, Option<Notifier>),
     },
     NewIncomingMessage {
-        peer_id: PeerId,
+        peer: Peer,
         message: Message,
     },
     Disconnected {
-        peer_id: PeerId,
+        peer: Peer,
     },
 }
 
-impl<Si, St> From<(PeerId, Si, St)> for Event
+impl<Si, St> From<(Peer, Si, St)> for Event
 where
     Si: Sink<Message, Error = conn::Error> + Send + 'static,
     St: Stream<Item = Message> + Send + 'static,
 {
-    fn from((peer_id, outgoing, incoming): (PeerId, Si, St)) -> Self {
+    fn from((peer, outgoing, incoming): (Peer, Si, St)) -> Self {
         Event::ConnectionEstablished {
-            peer_id,
+            peer,
             incoming: Box::pin(incoming),
             outgoing: Box::pin(outgoing),
         }
@@ -75,17 +77,21 @@ impl Default for ConnectState {
     }
 }
 
-pub struct EventHandler {
+pub struct EventHandler<F> {
     peers: HashMap<PeerId, ConnectState>,
     sender: mpsc::Sender<Event>,
+    connector: Connector,
+    msg_handler: F,
 }
 
-impl EventHandler {
-    pub fn start() -> (impl Future, mpsc::Sender<Event>) {
+impl<Fut: Future<Output = ()> + Send + 'static, F: FnMut(Peer, Message) -> Fut> EventHandler<F> {
+    pub fn start(connector: Connector, msg_handler: F) -> (impl Future, mpsc::Sender<Event>) {
         let (sender, mut receiver) = mpsc::channel(10);
         let mut handler = EventHandler {
             peers: HashMap::default(),
             sender: sender.clone(),
+            msg_handler: msg_handler,
+            connector
         };
         let fut = async move {
             while let Some(event) = receiver.next().await {
@@ -126,23 +132,23 @@ impl EventHandler {
                     pending_messages.push(message);
                 }
             },
-            Event::NewIncomingMessage { peer_id, message } => {
-                info!("received message from {}: {}", peer_id, message.message);
+            Event::NewIncomingMessage { peer, message } => {
+                tokio::spawn((self.msg_handler)(peer, message));
             }
-            Event::Disconnected { peer_id } => {
-                let removed = self.peers.remove(&peer_id);
+            Event::Disconnected { peer } => {
+                let removed = self.peers.remove(&peer.id());
                 match removed.is_some() {
-                    true => info!("disconnected from {}", peer_id),
-                    false => debug!("redundant disconnect event for {}", peer_id),
+                    true => info!("disconnected from {}", peer),
+                    false => debug!("redundant disconnect event for {}", peer),
                 }
             }
             Event::ConnectionEstablished {
-                peer_id,
+                peer,
                 incoming,
                 outgoing,
             } => {
-                self.spawn_outgoing_messages(peer_id, outgoing);
-                self.spawn_incoming_messages(peer_id, incoming);
+                self.spawn_outgoing_messages(peer, outgoing);
+                self.spawn_incoming_messages(peer, incoming);
             }
             Event::ConnectionFailed { peer_id, reason } => {
                 if let Some(ConnectState::Connecting {
@@ -166,13 +172,14 @@ impl EventHandler {
 
     fn maybe_connect(&mut self, peer_id: PeerId) -> &mut ConnectState {
         let mut sender = self.sender.clone();
+        let connection = self.connector.connect(peer_id);
         self.peers.entry(peer_id).or_insert_with(move || {
             tokio::spawn(async move {
-                match crate::p2p::conn::connect(peer_id).await {
-                    Ok((incoming, outgoing)) => {
-                        info!("successfully connected to {}", peer_id);
+                match connection.await {
+                    Ok((peer, incoming, outgoing)) => {
+                        info!("successfully connected to {}", peer);
                         sender
-                            .send(Event::from((peer_id, incoming, outgoing)))
+                            .send(Event::from((peer, incoming, outgoing)))
                             .await
                             .unwrap();
                     }
@@ -186,19 +193,19 @@ impl EventHandler {
         })
     }
 
-    fn spawn_outgoing_messages(&mut self, peer_id: PeerId, mut sink: PeerSink) {
-        let connect_state = self.peers.entry(peer_id).or_default();
+    fn spawn_outgoing_messages(&mut self, peer: Peer, mut sink: PeerSink) {
+        let connect_state = self.peers.entry(peer.id()).or_default();
         let (sender, mut receiver) = mpsc::unbounded();
         if let ConnectState::Connecting {
             notify_on_connect,
             pending_messages,
         } = connect_state
         {
-            for notifier in notify_on_connect.drain(0..) {
+            for notifier in notify_on_connect.drain(..) {
                 let _ = notifier.send(Ok(()));
             }
             let message_sender = sender.clone();
-            for pending_message in pending_messages.drain(0..) {
+            for pending_message in pending_messages.drain(..) {
                 // queue up pending messages
                 message_sender.unbounded_send(pending_message).unwrap();
             }
@@ -208,11 +215,11 @@ impl EventHandler {
             while let Some((message, notifier)) = receiver.next().await {
                 let res = match sink.send(message).await {
                     Ok(_) => {
-                        debug!("successfully sent message to {}", peer_id);
+                        debug!("successfully sent message to {}", peer);
                         Ok(())
                     }
                     Err(e) => {
-                        error!("Failed to send message to {}: {}", peer_id, e);
+                        error!("Failed to send message to {}: {}", peer, e);
                         Err(e)
                     }
                 };
@@ -226,17 +233,17 @@ impl EventHandler {
         *connect_state = ConnectState::Connected(sender);
     }
 
-    fn spawn_incoming_messages(&self, peer_id: PeerId, mut stream: PeerStream) {
+    fn spawn_incoming_messages(&self, peer: Peer, mut stream: PeerStream) {
         let mut sender = self.sender.clone();
         let read_msg_loop = async move {
             while let Some(message) = stream.next().await {
-                debug!("received message from {}", peer_id);
+                debug!("received message from {}", peer);
                 sender
-                    .send(Event::NewIncomingMessage { peer_id, message })
+                    .send(Event::NewIncomingMessage { peer, message })
                     .await
                     .unwrap();
             }
-            sender.send(Event::Disconnected { peer_id }).await.unwrap();
+            sender.send(Event::Disconnected { peer }).await.unwrap();
         };
 
         tokio::spawn(read_msg_loop);
