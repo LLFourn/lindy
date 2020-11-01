@@ -3,13 +3,14 @@ use futures::io;
 use futures::StreamExt;
 use futures::TryFutureExt;
 use futures::{Sink, SinkExt, Stream};
+use serde::Serialize;
+use serde::de::DeserializeOwned;
 use std::fmt;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
 use tokio_util::codec::LinesCodecError;
 // use std::collections::HashMap;
 // use std::sync::RwLock;
-use crate::p2p::messages::Message;
 use crate::PeerId;
 use secp256kfun::XOnly;
 use thiserror::Error;
@@ -83,13 +84,13 @@ async fn send_handshake(
     Ok((peer, connection))
 }
 
-async fn frame_connection(
+async fn frame_connection<M: DeserializeOwned + Serialize>(
     peer: Peer,
     connection: TcpStream,
 ) -> Result<
     (
-        impl Sink<Message, Error = Error>,
-        impl Stream<Item = Message>,
+        impl Sink<M, Error = Error>,
+        impl Stream<Item = M>,
     ),
     Error,
 > {
@@ -104,7 +105,7 @@ async fn frame_connection(
             future::ready(res.is_ok())
         })
         .map(|res| res.unwrap())
-        .map(|line| serde_json::from_str::<Message>(&line))
+        .map(|line| serde_json::from_str::<M>(&line))
         .take_while(move |res| {
             if let Err(e) = res {
                 error!("got invalid JSON from {}: {}", peer, e);
@@ -114,7 +115,7 @@ async fn frame_connection(
         .map(|res| res.unwrap());
 
     let sink = sink
-        .with(async move |message: Message| -> Result<String, Error> {
+        .with(async move |message: M| -> Result<String, Error> {
             Ok(serde_json::to_string(&message).unwrap())
         })
         .sink_map_err(Into::into);
@@ -122,15 +123,15 @@ async fn frame_connection(
     Ok((sink, stream))
 }
 
-pub async fn listen<A: ToSocketAddrs>(
+pub async fn listen<A: ToSocketAddrs, M: DeserializeOwned + Serialize + Send + 'static>(
     local_key: XOnly,
     addr: A,
 ) -> anyhow::Result<
     impl Stream<
         Item = (
             Peer,
-            impl Sink<Message, Error = Error> + Send + 'static,
-            impl Stream<Item = Message> + Send + 'static,
+            impl Sink<M, Error = Error> + Send + 'static,
+            impl Stream<Item = M> + Send + 'static,
         ),
     >,
 > {
@@ -193,19 +194,18 @@ pub struct Connector {
     pub local_key: XOnly,
 }
 
-
 impl Connector {
-    pub async fn connect(
+    pub async fn connect<M: DeserializeOwned + Serialize + Send + 'static>(
         self,
         peer_id: PeerId,
     ) -> Result<
-            (
-                Peer,
-                impl Sink<Message, Error = Error> + Send + 'static,
-                impl Stream<Item = Message> + Send + 'static,
-            ),
+        (
+            Peer,
+            impl Sink<M, Error = Error> + Send + 'static,
+            impl Stream<Item = M> + Send + 'static,
+        ),
         Error,
-        > {
+    > {
         let new_connection = TcpStream::connect(peer_id).await?;
         let (peer, connection) = send_handshake(new_connection, &self.local_key).await?;
         let (sender, receiver) = frame_connection(peer, connection).await?;

@@ -1,4 +1,3 @@
-use crate::p2p::messages::Message;
 use crate::PeerId;
 use futures::channel::mpsc;
 use futures::channel::oneshot;
@@ -14,14 +13,14 @@ use super::conn;
 use super::conn::Connector;
 use super::conn::Peer;
 
-pub type PeerSink = Pin<Box<dyn Sink<Message, Error = conn::Error> + Send + 'static>>;
-pub type PeerStream = Pin<Box<dyn Stream<Item = Message> + Send + 'static>>;
+pub type PeerSink<M> = Pin<Box<dyn Sink<M, Error = conn::Error> + Send + 'static>>;
+pub type PeerStream<M> = Pin<Box<dyn Stream<Item = M> + Send + 'static>>;
 
-pub enum Event {
+pub enum Event<M> {
     ConnectionEstablished {
         peer: Peer,
-        incoming: PeerStream,
-        outgoing: PeerSink,
+        incoming: PeerStream<M>,
+        outgoing: PeerSink<M>,
     },
     ConnectionFailed {
         peer_id: PeerId,
@@ -33,21 +32,22 @@ pub enum Event {
     },
     SendMessageReq {
         peer_id: PeerId,
-        message: (Message, Option<Notifier>),
+        message: (M, Option<Notifier>),
     },
     NewIncomingMessage {
         peer: Peer,
-        message: Message,
+        message: M,
     },
     Disconnected {
         peer: Peer,
     },
 }
 
-impl<Si, St> From<(Peer, Si, St)> for Event
+impl<M, Si, St> From<(Peer, Si, St)> for Event<M>
 where
-    Si: Sink<Message, Error = conn::Error> + Send + 'static,
-    St: Stream<Item = Message> + Send + 'static,
+    M: Send + 'static,
+    Si: Sink<M, Error = conn::Error> + Send + 'static,
+    St: Stream<Item = M> + Send + 'static,
 {
     fn from((peer, outgoing, incoming): (Peer, Si, St)) -> Self {
         Event::ConnectionEstablished {
@@ -60,15 +60,15 @@ where
 
 pub type Notifier = oneshot::Sender<Result<(), conn::Error>>;
 
-enum ConnectState {
-    Connected(mpsc::UnboundedSender<(Message, Option<Notifier>)>),
+enum ConnectState<M> {
+    Connected(mpsc::UnboundedSender<(M, Option<Notifier>)>),
     Connecting {
         notify_on_connect: Vec<Notifier>,
-        pending_messages: Vec<(Message, Option<Notifier>)>,
+        pending_messages: Vec<(M, Option<Notifier>)>,
     },
 }
 
-impl Default for ConnectState {
+impl<M> Default for ConnectState<M> {
     fn default() -> Self {
         ConnectState::Connecting {
             notify_on_connect: vec![],
@@ -77,21 +77,25 @@ impl Default for ConnectState {
     }
 }
 
-pub struct EventHandler<F> {
-    peers: HashMap<PeerId, ConnectState>,
-    sender: mpsc::Sender<Event>,
+pub struct EventHandler<M,F> {
+    peers: HashMap<PeerId, ConnectState<M>>,
+    sender: mpsc::Sender<Event<M>>,
     connector: Connector,
     msg_handler: F,
 }
 
-impl<Fut: Future<Output = ()> + Send + 'static, F: FnMut(Peer, Message) -> Fut> EventHandler<F> {
-    pub fn start(connector: Connector, msg_handler: F) -> (impl Future, mpsc::Sender<Event>) {
+impl<M, Fut, F> EventHandler<M,F>
+where M: Send + serde::Serialize + serde::de::DeserializeOwned + Send + 'static,
+      Fut: Future<Output = ()> + Send + 'static,
+      F: FnMut(Peer, M) -> Fut
+{
+    pub fn start(connector: Connector, msg_handler: F) -> (impl Future, mpsc::Sender<Event<M>>) {
         let (sender, mut receiver) = mpsc::channel(10);
         let mut handler = EventHandler {
             peers: HashMap::default(),
             sender: sender.clone(),
             msg_handler: msg_handler,
-            connector
+            connector,
         };
         let fut = async move {
             while let Some(event) = receiver.next().await {
@@ -102,7 +106,7 @@ impl<Fut: Future<Output = ()> + Send + 'static, F: FnMut(Peer, Message) -> Fut> 
         (fut, sender)
     }
 
-    fn handle_event(&mut self, event: Event) {
+    fn handle_event(&mut self, event: Event<M>) {
         match event {
             Event::OutgoingConnectionReq { peer_id, notify } => match self.maybe_connect(peer_id) {
                 ConnectState::Connected(_) => info!(
@@ -170,7 +174,7 @@ impl<Fut: Future<Output = ()> + Send + 'static, F: FnMut(Peer, Message) -> Fut> 
         }
     }
 
-    fn maybe_connect(&mut self, peer_id: PeerId) -> &mut ConnectState {
+    fn maybe_connect(&mut self, peer_id: PeerId) -> &mut ConnectState<M> {
         let mut sender = self.sender.clone();
         let connection = self.connector.connect(peer_id);
         self.peers.entry(peer_id).or_insert_with(move || {
@@ -179,7 +183,7 @@ impl<Fut: Future<Output = ()> + Send + 'static, F: FnMut(Peer, Message) -> Fut> 
                     Ok((peer, incoming, outgoing)) => {
                         info!("successfully connected to {}", peer);
                         sender
-                            .send(Event::from((peer, incoming, outgoing)))
+                            .send(Event::<M>::from((peer, incoming, outgoing)))
                             .await
                             .unwrap();
                     }
@@ -193,7 +197,7 @@ impl<Fut: Future<Output = ()> + Send + 'static, F: FnMut(Peer, Message) -> Fut> 
         })
     }
 
-    fn spawn_outgoing_messages(&mut self, peer: Peer, mut sink: PeerSink) {
+    fn spawn_outgoing_messages(&mut self, peer: Peer, mut sink: PeerSink<M>) {
         let connect_state = self.peers.entry(peer.id()).or_default();
         let (sender, mut receiver) = mpsc::unbounded();
         if let ConnectState::Connecting {
@@ -233,7 +237,7 @@ impl<Fut: Future<Output = ()> + Send + 'static, F: FnMut(Peer, Message) -> Fut> 
         *connect_state = ConnectState::Connected(sender);
     }
 
-    fn spawn_incoming_messages(&self, peer: Peer, mut stream: PeerStream) {
+    fn spawn_incoming_messages(&self, peer: Peer, mut stream: PeerStream<M>) {
         let mut sender = self.sender.clone();
         let read_msg_loop = async move {
             while let Some(message) = stream.next().await {

@@ -20,5 +20,6 @@ serde_json = "1.0"
 log = "0.4"
 env_logger = "0.7"
 thiserror = "1.0"
-bitcoin = "0.24"
-secp256kfun = { path = "../secp256kfun/secp256kfun"  }
+secp256kfun = { path = "../secp256kfun/secp256kfun", features = ["serialize_hex"] }
+bdk = { git = "https://github.com/bitcoindevkit/bdk.git", rev = "e6c2823" }
+ecdsa_fun = { path = "../secp256kfun/ecdsa_fun", features = ["serialize_hex"] }

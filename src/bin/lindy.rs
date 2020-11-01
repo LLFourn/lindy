@@ -36,14 +36,12 @@ async fn main() -> anyhow::Result<()> {
     let keychain = KeyChain::new(config.seed);
     let local_key = keychain.node_keypair().public_key.to_xonly();
 
+    let connector = Connector { local_key };
 
-    let connector = Connector {
-        local_key
-    };
-
-    let (event_handler_loop, event_sender) = EventHandler::start(connector, async move |peer_id, message| {
-        info!("got message from {}: {}", peer_id, message.message);
-    });
+    let (event_handler_loop, event_sender) =
+        EventHandler::start(connector, async move |peer_id, message: lindy::p2p::messages::Message| {
+            info!("got message from {}: {:?}", peer_id, message);
+        });
 
     info!("starting p2p on: {}", config.lindy_p2p.listen);
 

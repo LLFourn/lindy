@@ -41,7 +41,7 @@ impl<E: std::error::Error> From<E> for Error {
 }
 
 pub fn routes(
-    event_sender: mpsc::Sender<Event>,
+    event_sender: mpsc::Sender<Event<Message>>,
 ) -> impl Filter<Extract = impl warp::Reply, Error = Rejection> + Clone {
     let new_peer = warp::post()
         .and(add_event_sender(event_sender.clone()))
@@ -60,13 +60,13 @@ pub fn routes(
 }
 
 fn add_event_sender(
-    sender: mpsc::Sender<Event>,
-) -> impl Filter<Extract = (mpsc::Sender<Event>,), Error = Infallible> + Clone {
+    sender: mpsc::Sender<Event<Message>>,
+) -> impl Filter<Extract = (mpsc::Sender<Event<Message>>,), Error = Infallible> + Clone {
     warp::any().map(move || sender.clone())
 }
 
 async fn connect(
-    mut sender: mpsc::Sender<Event>,
+    mut sender: mpsc::Sender<Event<Message>>,
     new_peer: NewPeerReq,
 ) -> Result<impl warp::Reply, Infallible> {
     let (notifier, on_connect) = oneshot::channel();
@@ -97,7 +97,7 @@ async fn connect(
 }
 
 async fn send_message(
-    mut sender: mpsc::Sender<Event>,
+    mut sender: mpsc::Sender<Event<Message>>,
     peer_id: PeerId,
     message: Message,
 ) -> Result<impl warp::Reply, Infallible> {

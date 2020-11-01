@@ -1,9 +1,8 @@
 #[derive(Clone)]
 pub struct Seed([u8; 64]);
-use bitcoin::hashes::{sha512, Hmac, HmacEngine, HashEngine, Hash};
-use secp256kfun::{marker::*, Point, Scalar, G};
-
+use crate::bitcoin::hashes::{sha512, Hash, HashEngine, Hmac, HmacEngine};
 use crate::keychain::KeyPair;
+use secp256kfun::{marker::*, Point, Scalar, G};
 
 crate::impl_fromstr_deserailize! {
     name => "32-byte lindy seed",
@@ -27,7 +26,7 @@ impl Seed {
         let mut hmac = self.to_sha2_hmac();
         hmac.input(tag);
         let res = Hmac::from_engine(hmac);
-        let mut bytes = [0u8;64];
+        let mut bytes = [0u8; 64];
         bytes.copy_from_slice(&res[..]);
         Seed(bytes)
     }
