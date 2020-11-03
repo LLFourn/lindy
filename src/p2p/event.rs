@@ -23,15 +23,15 @@ pub enum Event<M> {
         outgoing: PeerSink<M>,
     },
     ConnectionFailed {
-        peer_id: PeerId,
+        peer: Peer,
         reason: conn::Error,
     },
     OutgoingConnectionReq {
-        peer_id: PeerId,
+        peer: Peer,
         notify: Option<Notifier>,
     },
     SendMessageReq {
-        peer_id: PeerId,
+        peer: Peer,
         message: (M, Option<Notifier>),
     },
     NewIncomingMessage {
@@ -41,6 +41,23 @@ pub enum Event<M> {
     Disconnected {
         peer: Peer,
     },
+}
+
+impl<M> Event<M> {
+    pub async fn send_message(
+        event_sender: &mut mpsc::Sender<Self>,
+        peer: Peer,
+        message: M,
+    ) -> Result<(), conn::Error> {
+        let (sender, receiver) = oneshot::channel();
+        event_sender
+            .send(Event::SendMessageReq {
+                peer,
+                message: (message, Some(sender)),
+            })
+            .await;
+        receiver.await.unwrap()
+    }
 }
 
 impl<M, Si, St> From<(Peer, Si, St)> for Event<M>
@@ -77,17 +94,18 @@ impl<M> Default for ConnectState<M> {
     }
 }
 
-pub struct EventHandler<M,F> {
+pub struct EventHandler<M, F> {
     peers: HashMap<PeerId, ConnectState<M>>,
     sender: mpsc::Sender<Event<M>>,
     connector: Connector,
     msg_handler: F,
 }
 
-impl<M, Fut, F> EventHandler<M,F>
-where M: Send + serde::Serialize + serde::de::DeserializeOwned + Send + 'static,
-      Fut: Future<Output = ()> + Send + 'static,
-      F: FnMut(Peer, M) -> Fut
+impl<M, Fut, F> EventHandler<M, F>
+where
+    M: Send + serde::Serialize + serde::de::DeserializeOwned + Send + 'static,
+    Fut: Future<Output = ()> + Send + 'static,
+    F: FnMut(Peer, M) -> Fut,
 {
     pub fn start(connector: Connector, msg_handler: F) -> (impl Future, mpsc::Sender<Event<M>>) {
         let (sender, mut receiver) = mpsc::channel(10);
@@ -108,10 +126,10 @@ where M: Send + serde::Serialize + serde::de::DeserializeOwned + Send + 'static,
 
     fn handle_event(&mut self, event: Event<M>) {
         match event {
-            Event::OutgoingConnectionReq { peer_id, notify } => match self.maybe_connect(peer_id) {
+            Event::OutgoingConnectionReq { peer, notify } => match self.maybe_connect(peer) {
                 ConnectState::Connected(_) => info!(
                     "Already connected to {}. Ingorning connection request.",
-                    peer_id
+                    peer
                 ),
                 ConnectState::Connecting {
                     notify_on_connect, ..
@@ -121,9 +139,9 @@ where M: Send + serde::Serialize + serde::de::DeserializeOwned + Send + 'static,
                     }
                 }
             },
-            Event::SendMessageReq { peer_id, message } => match self.maybe_connect(peer_id) {
+            Event::SendMessageReq { peer, message } => match self.maybe_connect(peer) {
                 ConnectState::Connected(outgoing_queue) => {
-                    debug!("Using existing connection to send message to {}", peer_id);
+                    debug!("Using existing connection to send message to {}", peer);
                     outgoing_queue.unbounded_send(message).unwrap();
                 }
                 ConnectState::Connecting {
@@ -131,7 +149,7 @@ where M: Send + serde::Serialize + serde::de::DeserializeOwned + Send + 'static,
                 } => {
                     debug!(
                         "Currently connecting to {}, so putting message in queue",
-                        peer_id
+                        peer
                     );
                     pending_messages.push(message);
                 }
@@ -154,11 +172,11 @@ where M: Send + serde::Serialize + serde::de::DeserializeOwned + Send + 'static,
                 self.spawn_outgoing_messages(peer, outgoing);
                 self.spawn_incoming_messages(peer, incoming);
             }
-            Event::ConnectionFailed { peer_id, reason } => {
+            Event::ConnectionFailed { peer, reason } => {
                 if let Some(ConnectState::Connecting {
                     mut notify_on_connect,
                     mut pending_messages,
-                }) = self.peers.remove(&peer_id)
+                }) = self.peers.remove(&peer.id())
                 {
                     for notify in notify_on_connect.drain(..) {
                         let _ = notify.send(Err(reason));
@@ -174,10 +192,10 @@ where M: Send + serde::Serialize + serde::de::DeserializeOwned + Send + 'static,
         }
     }
 
-    fn maybe_connect(&mut self, peer_id: PeerId) -> &mut ConnectState<M> {
+    fn maybe_connect(&mut self, peer: Peer) -> &mut ConnectState<M> {
         let mut sender = self.sender.clone();
-        let connection = self.connector.connect(peer_id);
-        self.peers.entry(peer_id).or_insert_with(move || {
+        let connection = self.connector.connect(peer);
+        self.peers.entry(peer.id()).or_insert_with(move || {
             tokio::spawn(async move {
                 match connection.await {
                     Ok((peer, incoming, outgoing)) => {
@@ -188,7 +206,7 @@ where M: Send + serde::Serialize + serde::de::DeserializeOwned + Send + 'static,
                             .unwrap();
                     }
                     Err(e) => sender
-                        .send(Event::ConnectionFailed { peer_id, reason: e })
+                        .send(Event::ConnectionFailed { peer, reason: e })
                         .await
                         .unwrap(),
                 }

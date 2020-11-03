@@ -3,8 +3,9 @@ use futures::io;
 use futures::StreamExt;
 use futures::TryFutureExt;
 use futures::{Sink, SinkExt, Stream};
-use serde::Serialize;
 use serde::de::DeserializeOwned;
+use serde::Serialize;
+use std::convert::TryFrom;
 use std::fmt;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
@@ -12,6 +13,7 @@ use tokio_util::codec::LinesCodecError;
 // use std::collections::HashMap;
 // use std::sync::RwLock;
 use crate::PeerId;
+use anyhow::anyhow;
 use secp256kfun::XOnly;
 use thiserror::Error;
 use tokio::net::TcpStream;
@@ -32,36 +34,59 @@ impl From<io::Error> for HandshakeError {
     }
 }
 
-#[derive(Clone, Debug, Copy)]
+#[derive(Clone, Debug, Copy, serde::Serialize, serde::Deserialize)]
+#[serde(try_from = "String")]
 pub struct Peer {
-    pub socket_addr: std::net::SocketAddr,
-    pub remote_key: XOnly,
+    pub addr: std::net::SocketAddr,
+    pub key: XOnly,
+}
+
+impl core::str::FromStr for Peer {
+    type Err = anyhow::Error;
+
+    fn from_str(string: &str) -> Result<Self, anyhow::Error> {
+        let mut segments = string.split('@');
+        let addr = std::net::SocketAddr::from_str(segments.next().unwrap())?;
+        let key = XOnly::from_str(segments.next().ok_or(anyhow!("missing remote key"))?)?;
+        Ok(Self { addr, key })
+    }
+}
+
+impl From<Peer> for String {
+    fn from(peer: Peer) -> String {
+        peer.to_string()
+    }
+}
+
+impl TryFrom<String> for Peer {
+    type Error = anyhow::Error;
+
+    fn try_from(string: String) -> Result<Self, Self::Error> {
+        use std::str::FromStr;
+        Self::from_str(&string)
+    }
 }
 
 impl Peer {
     pub fn id(&self) -> PeerId {
-        self.socket_addr
+        self.key
     }
 }
 
 impl fmt::Display for Peer {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}@{}", &self.remote_key, &self.socket_addr)
+        write!(f, "{}@{}", &self.key, &self.addr)
     }
 }
 
-async fn recv_handshake(
-    mut connection: TcpStream,
-    point: &XOnly,
-) -> Result<(Peer, TcpStream), HandshakeError> {
-    connection.write_all(point.as_bytes()).await?;
+async fn recv_handshake(mut connection: TcpStream) -> Result<(Peer, TcpStream), HandshakeError> {
     let mut xonly = [0u8; 32];
     connection.read_exact(&mut xonly).await?;
     let remote_key = XOnly::from_bytes(xonly).ok_or(HandshakeError::InvalidKey)?;
 
     let peer = Peer {
-        socket_addr: connection.peer_addr()?,
-        remote_key,
+        addr: connection.peer_addr()?,
+        key: remote_key,
     };
 
     Ok((peer, connection))
@@ -69,31 +94,16 @@ async fn recv_handshake(
 
 async fn send_handshake(
     mut connection: TcpStream,
-    point: &XOnly,
-) -> Result<(Peer, TcpStream), HandshakeError> {
-    let mut xonly = [0u8; 32];
-    connection.read_exact(&mut xonly).await?;
-    let remote_key = XOnly::from_bytes(xonly).ok_or(HandshakeError::InvalidKey)?;
-    connection.write_all(point.as_bytes()).await?;
-
-    let peer = Peer {
-        socket_addr: connection.peer_addr()?,
-        remote_key,
-    };
-
-    Ok((peer, connection))
+    local_key: &XOnly,
+) -> Result<TcpStream, HandshakeError> {
+    connection.write_all(local_key.as_bytes()).await?;
+    Ok(connection)
 }
 
 async fn frame_connection<M: DeserializeOwned + Serialize>(
     peer: Peer,
     connection: TcpStream,
-) -> Result<
-    (
-        impl Sink<M, Error = Error>,
-        impl Stream<Item = M>,
-    ),
-    Error,
-> {
+) -> Result<(impl Sink<M, Error = Error>, impl Stream<Item = M>), Error> {
     let framed = Framed::new(connection, LinesCodec::new());
     let (sink, stream) = framed.split();
 
@@ -124,7 +134,6 @@ async fn frame_connection<M: DeserializeOwned + Serialize>(
 }
 
 pub async fn listen<A: ToSocketAddrs, M: DeserializeOwned + Serialize + Send + 'static>(
-    local_key: XOnly,
     addr: A,
 ) -> anyhow::Result<
     impl Stream<
@@ -139,7 +148,7 @@ pub async fn listen<A: ToSocketAddrs, M: DeserializeOwned + Serialize + Send + '
     let received_connections = socket.filter_map(async move |connection| match connection {
         Ok(connection) => {
             let peer_addr = connection.peer_addr().ok()?;
-            let (peer, connection) = recv_handshake(connection, &local_key)
+            let (peer, connection) = recv_handshake(connection)
                 .inspect_err(|e| error!("error during handshake with {}: {}", peer_addr, e))
                 .await
                 .ok()?;
@@ -197,7 +206,7 @@ pub struct Connector {
 impl Connector {
     pub async fn connect<M: DeserializeOwned + Serialize + Send + 'static>(
         self,
-        peer_id: PeerId,
+        peer: Peer,
     ) -> Result<
         (
             Peer,
@@ -206,8 +215,8 @@ impl Connector {
         ),
         Error,
     > {
-        let new_connection = TcpStream::connect(peer_id).await?;
-        let (peer, connection) = send_handshake(new_connection, &self.local_key).await?;
+        let new_connection = TcpStream::connect(peer.addr).await?;
+        let connection = send_handshake(new_connection, &self.local_key).await?;
         let (sender, receiver) = frame_connection(peer, connection).await?;
         Ok((peer, sender, receiver))
     }

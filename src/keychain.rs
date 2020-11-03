@@ -1,6 +1,6 @@
+use crate::seed::Seed;
 use crate::ChannelId;
 use crate::PeerId;
-use crate::seed::Seed;
 use secp256kfun::{marker::*, Point, Scalar};
 
 pub struct KeyChain {
@@ -19,12 +19,13 @@ impl KeyChain {
         Self { seed, keypair }
     }
 
-
     pub fn node_keypair(&self) -> &KeyPair {
         &self.keypair
     }
 
     pub fn channel_seed(&self, peer_id: PeerId, channel_id: ChannelId) -> Seed {
-        self.seed.child(peer_id.to_string().as_bytes()).child(channel_id.to_string().as_bytes())
+        self.seed
+            .child(peer_id.to_string().as_bytes())
+            .child(channel_id.to_string().as_bytes())
     }
 }
