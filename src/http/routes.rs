@@ -12,43 +12,29 @@ use warp::Rejection;
 use super::api_reply::ApiReply;
 use super::api_reply::ErrorMessage;
 use crate::channel::rs_ecdsa::ChannelManager;
+use crate::channel::Channel;
+use crate::channel::ChannelDb;
+use crate::channel::ChannelId;
+use crate::http::messages::*;
 use crate::p2p::conn::Peer;
 use crate::p2p::event::Event;
 use crate::p2p::messages::Message;
-use crate::ChannelId;
-use crate::PeerId;
-
-#[derive(serde::Deserialize, serde::Serialize)]
-struct ChannelCreate {
-    hello: String,
-}
-
-type NewPeerReq = Peer;
-
-#[derive(serde::Serialize, serde::Deserialize)]
-pub struct NewPeerRes {
-    id: PeerId,
-}
-
-#[derive(serde::Serialize, serde::Deserialize)]
-pub struct Error {
-    description: String,
-}
-
-impl<E: std::error::Error> From<E> for Error {
-    fn from(e: E) -> Self {
-        Error {
-            description: format!("{}", e),
-        }
-    }
-}
 
 type CM = Arc<Mutex<ChannelManager>>;
+type Db = Arc<dyn ChannelDb>;
 
 pub fn routes(
     event_sender: mpsc::Sender<Event<Message>>,
     channel_manager: CM,
+    channel_db: Db,
+    me: Peer,
 ) -> impl Filter<Extract = impl warp::Reply, Error = Rejection> + Clone {
+    let get_root = warp::get().and(warp::path::end()).and_then(
+        async move || -> Result<ApiReply<RootInfo>, Infallible> {
+            Ok(ApiReply::Ok(RootInfo { me }))
+        },
+    );
+
     let new_peer = warp::post()
         .and(require_this(event_sender.clone()))
         .and(warp::path("peers"))
@@ -68,7 +54,13 @@ pub fn routes(
         .and(warp::body::json::<NewChannelReq>())
         .and_then(open_channel);
 
-    new_peer.or(post_channel)
+    let get_channel = warp::get()
+        .and(require_this(channel_db.clone()))
+        .and(warp::path::param::<ChannelId>())
+        .and(warp::path("channels"))
+        .and_then(channel_info);
+
+    get_root.or(post_channel).or(get_channel).or(new_peer)
 }
 
 fn require_this<T: Clone + Send + 'static>(
@@ -96,12 +88,12 @@ async fn connect(
                 format!("/{}", new_peer.id()),
                 NewPeerRes { id: new_peer.id() },
             ),
-            Err(e) => ApiReply::Err(ErrorMessage::from_status(
+            Err(_) => ApiReply::Err(ErrorMessage::from_status(
                 http::StatusCode::FAILED_DEPENDENCY,
             )),
         })
         //TOOD: Fix unwrap
-        .unwrap())
+        .unwrap_or(ApiReply::Err(ErrorMessage::internal_server_error())))
 }
 
 // async fn send_message(
@@ -125,17 +117,6 @@ async fn connect(
 //         }))
 // }
 
-#[derive(serde::Deserialize, serde::Serialize)]
-pub struct NewChannelReq {
-    peer: Peer,
-    value: u64,
-}
-
-#[derive(serde::Deserialize, serde::Serialize)]
-pub struct NewChannelRes {
-    channel_id: ChannelId,
-}
-
 async fn open_channel(
     channel_manager: CM,
     new_channel: NewChannelReq,
@@ -146,6 +127,35 @@ async fn open_channel(
         .await
     {
         Ok(channel_id) => Ok(ApiReply::Ok(NewChannelRes { channel_id })),
-        Err(e) => Ok(ApiReply::Err(ErrorMessage::internal_server_error())),
+        Err(e) => Ok(match e.downcast::<bdk::Error>() {
+            Ok(e) => ApiReply::Err(
+                ErrorMessage::from_status(http::StatusCode::BAD_REQUEST)
+                    .with_message(e.to_string()),
+            ),
+            Err(_) => ApiReply::Err(ErrorMessage::internal_server_error()),
+        }),
     }
 }
+
+#[derive(serde::Serialize, serde::Deserialize)]
+struct GetChannel {
+    #[serde(flatten)]
+    channel: Channel,
+}
+
+async fn channel_info(
+    channel_db: Db,
+    channel_id: ChannelId,
+) -> Result<ApiReply<GetChannel>, Infallible> {
+    match channel_db.get_channel(channel_id).await {
+        Ok(Some(channel)) => Ok(ApiReply::Ok(GetChannel { channel })),
+        Ok(None) => Ok(ApiReply::Err(ErrorMessage::not_found())),
+        Err(e) => {
+            error!("{}", e);
+            Ok(ApiReply::Err(ErrorMessage::internal_server_error()))
+        }
+    }
+}
+// async fn get_channel(
+//     channel_manager: CM,
+// ) -> Result<ApiReply<>>

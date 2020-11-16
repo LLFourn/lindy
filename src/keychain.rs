@@ -1,13 +1,15 @@
+use crate::channel::ChannelId;
 use crate::seed::Seed;
-use crate::ChannelId;
 use crate::PeerId;
 use secp256kfun::{marker::*, Point, Scalar};
 
+#[derive(Clone, Debug)]
 pub struct KeyChain {
     seed: Seed,
     keypair: KeyPair,
 }
 
+#[derive(Clone, Debug)]
 pub struct KeyPair {
     pub secret_key: Scalar,
     pub public_key: Point<EvenY>,

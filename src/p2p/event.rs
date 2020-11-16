@@ -55,8 +55,9 @@ impl<M> Event<M> {
                 peer,
                 message: (message, Some(sender)),
             })
-            .await;
-        receiver.await.unwrap()
+            .await
+            .expect("receiver won't be dropped");
+        receiver.await.expect("sender can't be dropped")
     }
 }
 
@@ -103,11 +104,14 @@ pub struct EventHandler<M, F> {
 
 impl<M, Fut, F> EventHandler<M, F>
 where
-    M: Send + serde::Serialize + serde::de::DeserializeOwned + Send + 'static,
+    M: Send + serde::Serialize + serde::de::DeserializeOwned + 'static,
     Fut: Future<Output = ()> + Send + 'static,
-    F: FnMut(Peer, M) -> Fut,
+    F: FnMut(Peer, M) -> Fut + Send,
 {
-    pub fn start(connector: Connector, msg_handler: F) -> (impl Future, mpsc::Sender<Event<M>>) {
+    pub fn start(
+        connector: Connector,
+        msg_handler: F,
+    ) -> (impl Future<Output = ()> + Send, mpsc::Sender<Event<M>>) {
         let (sender, mut receiver) = mpsc::channel(10);
         let mut handler = EventHandler {
             peers: HashMap::default(),

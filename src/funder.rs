@@ -1,5 +1,5 @@
 use crate::bitcoin::util::psbt::PartiallySignedTransaction;
-use crate::ChannelId;
+use crate::channel::ChannelId;
 use bdk::bitcoin::OutPoint;
 use bdk::bitcoin::PublicKey;
 use bdk::blockchain::Blockchain;

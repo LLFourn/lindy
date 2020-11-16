@@ -1,4 +1,4 @@
-use crate::ChannelId;
+use crate::channel::ChannelId;
 use ecdsa_fun::adaptor::EncryptedSignature;
 use secp256kfun::Point;
 

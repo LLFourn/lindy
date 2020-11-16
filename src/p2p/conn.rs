@@ -9,6 +9,7 @@ use std::convert::TryFrom;
 use std::fmt;
 use tokio::io::AsyncReadExt;
 use tokio::io::AsyncWriteExt;
+use tokio::net::TcpListener;
 use tokio_util::codec::LinesCodecError;
 // use std::collections::HashMap;
 // use std::sync::RwLock;
@@ -17,7 +18,6 @@ use anyhow::anyhow;
 use secp256kfun::XOnly;
 use thiserror::Error;
 use tokio::net::TcpStream;
-use tokio::net::ToSocketAddrs;
 use tokio_util::codec::{Framed, LinesCodec};
 
 #[derive(Error, Debug, Clone, Copy)]
@@ -35,7 +35,7 @@ impl From<io::Error> for HandshakeError {
 }
 
 #[derive(Clone, Debug, Copy, serde::Serialize, serde::Deserialize)]
-#[serde(try_from = "String")]
+#[serde(try_from = "String", into = "String")]
 pub struct Peer {
     pub addr: std::net::SocketAddr,
     pub key: XOnly,
@@ -46,8 +46,9 @@ impl core::str::FromStr for Peer {
 
     fn from_str(string: &str) -> Result<Self, anyhow::Error> {
         let mut segments = string.split('@');
-        let addr = std::net::SocketAddr::from_str(segments.next().unwrap())?;
-        let key = XOnly::from_str(segments.next().ok_or(anyhow!("missing remote key"))?)?;
+        let key = XOnly::from_str(segments.next().unwrap())?;
+        let addr =
+            std::net::SocketAddr::from_str(segments.next().ok_or(anyhow!("missing remote key"))?)?;
         Ok(Self { addr, key })
     }
 }
@@ -133,8 +134,8 @@ async fn frame_connection<M: DeserializeOwned + Serialize>(
     Ok((sink, stream))
 }
 
-pub async fn listen<A: ToSocketAddrs, M: DeserializeOwned + Serialize + Send + 'static>(
-    addr: A,
+pub async fn listen<M: DeserializeOwned + Serialize + Send + 'static>(
+    socket: TcpListener,
 ) -> anyhow::Result<
     impl Stream<
         Item = (
@@ -144,7 +145,6 @@ pub async fn listen<A: ToSocketAddrs, M: DeserializeOwned + Serialize + Send + '
         ),
     >,
 > {
-    let socket = tokio::net::TcpListener::bind(addr).await?;
     let received_connections = socket.filter_map(async move |connection| match connection {
         Ok(connection) => {
             let peer_addr = connection.peer_addr().ok()?;

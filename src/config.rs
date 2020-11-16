@@ -1,6 +1,7 @@
 use crate::funder::Funder;
 use crate::seed::Seed;
 use bdk::bitcoin::Network;
+use bdk::blockchain;
 use bdk::blockchain::AnyBlockchain;
 use bdk::blockchain::ConfigurableBlockchain;
 use bdk::descriptor::ExtendedDescriptor;
@@ -37,7 +38,7 @@ impl Config {
                 let database = sled::open(wallet_config.database.as_str())?;
                 let tree = database.open_tree("wallet")?;
                 let blockchain = AnyBlockchain::from_config(&self.blockchain)?;
-                Ok(Some(Mutex::new(
+                let wallet =
                     bdk::Wallet::new(
                         wallet_config.descriptor.clone(),
                         None,
@@ -45,8 +46,11 @@ impl Config {
                         tree,
                         blockchain,
                     )
-                    .await?,
-                )))
+                    .await?;
+
+                wallet.sync(blockchain::log_progress(), None).await?;
+
+                Ok(Some(Mutex::new(wallet)))
             }
             None => Ok(None),
         }

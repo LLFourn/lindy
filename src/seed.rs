@@ -53,10 +53,24 @@ impl Seed {
             secret_key,
         }
     }
+
+    pub fn test_wallet_xpriv(&self) -> bdk::bitcoin::util::bip32::ExtendedPrivKey {
+        bdk::bitcoin::util::bip32::ExtendedPrivKey::new_master(
+            bdk::bitcoin::Network::Regtest,
+            &self.0,
+        )
+        .unwrap()
+    }
 }
 
 impl From<Seed> for [u8; 64] {
     fn from(seed: Seed) -> Self {
         seed.0
+    }
+}
+
+impl From<[u8; 64]> for Seed {
+    fn from(bytes: [u8; 64]) -> Self {
+        Seed::new(bytes)
     }
 }

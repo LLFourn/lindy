@@ -1,5 +1,12 @@
 use std::sync::Arc;
 
+use crate::channel::ChannelId;
+use crate::funder::Funder;
+use crate::keychain::KeyChain;
+use crate::keychain::KeyPair;
+use crate::p2p::conn::Peer;
+use crate::p2p::event::Event;
+use crate::p2p::messages::Message;
 use bdk::bitcoin::PublicKey;
 use bdk::descriptor::Descriptor;
 use bdk::descriptor::Segwitv0;
@@ -11,24 +18,22 @@ use secp256kfun::Point;
 use secp256kfun::Scalar;
 use secp256kfun::{g, marker::*, G};
 
-use crate::funder::Funder;
-use crate::keychain::KeyChain;
-use crate::keychain::KeyPair;
-use crate::p2p::conn::Peer;
-use crate::p2p::event::Event;
-use crate::p2p::messages::Message;
-use crate::ChannelId;
+use super::Channel;
+use super::ChannelDb;
+use super::ChannelState;
 
 pub struct ChannelManager {
     to_self_delay: u16,
     keychain: KeyChain,
     funder: Arc<dyn Funder>,
+    channel_db: Arc<dyn ChannelDb>,
     msg_sender: mpsc::Sender<Event<Message>>,
 }
 
 impl ChannelManager {
     pub fn new(
         funder: Arc<dyn Funder>,
+        channel_db: Arc<dyn ChannelDb>,
         keychain: KeyChain,
         msg_sender: mpsc::Sender<Event<Message>>,
     ) -> Self {
@@ -37,13 +42,10 @@ impl ChannelManager {
             keychain,
             funder,
             msg_sender,
+            channel_db,
         }
     }
-    pub async fn new_channel(
-        &mut self,
-        value: u64,
-        peer: Peer,
-    ) -> Result<ChannelId, anyhow::Error> {
+    pub async fn new_channel(&mut self, value: u64, peer: Peer) -> anyhow::Result<ChannelId> {
         let pr =
             PointRandomizer::from_ecdh(&self.keychain.node_keypair(), &peer.key.to_point(), true);
         let ((_, p1), (_, p2)) = pr.points_at(0);
@@ -74,14 +76,23 @@ impl ChannelManager {
         let message = Message::RsEcdsaNewChannel {
             channel_id: fund_tx.channel_id(),
             funding_satoshis: value,
-            to_self_delay: 40,
+            to_self_delay: self.to_self_delay,
             feerate_per_kw: 372 * 250,
             revocation_key: G.clone().mark::<Normal>(),
         };
 
         Event::send_message(&mut self.msg_sender, peer, message).await?;
 
-        Ok(fund_tx.channel_id())
+        let channel = Channel {
+            id: fund_tx.channel_id(),
+            state: ChannelState::Pending,
+            peer: peer.id(),
+        };
+
+        let id = channel.id;
+        self.channel_db.insert_channel(channel).await?;
+
+        Ok(id)
     }
 }
 
@@ -119,8 +130,8 @@ impl PointRandomizer {
     }
 
     pub fn points_at(&self, index: u64) -> ((Scalar, Point), (Scalar, Point)) {
-        let mut chacha =
-            ChaCha20::new(&self.shared_secret, Nonce::from_slice(&index.to_be_bytes()));
+        let index = [&[0u8; 4][..], &index.to_be_bytes()[..]].concat();
+        let mut chacha = ChaCha20::new(&self.shared_secret, Nonce::from_slice(&index[..]));
         let mut r1 = [0u8; 32];
         let mut r2 = [0u8; 32];
         chacha.encrypt(&mut r1);

@@ -4,14 +4,14 @@
 extern crate log;
 mod config;
 mod hex;
-mod seed;
+pub mod seed;
 pub use config::Config;
 pub mod channel;
-pub mod keychain;
-pub mod p2p;
-pub use bdk::bitcoin;
 pub mod funder;
 pub mod http;
+pub mod keychain;
+pub mod p2p;
+pub mod server_bundle;
+pub use bdk::{bitcoin, reqwest};
 
 pub type PeerId = secp256kfun::XOnly;
-pub type ChannelId = bitcoin::OutPoint;

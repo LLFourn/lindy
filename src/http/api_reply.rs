@@ -1,4 +1,3 @@
-use futures::Future;
 use warp::{self, http};
 
 #[derive(Clone, Debug)]
@@ -8,27 +7,28 @@ pub enum ApiReply<T> {
     Created(String, T),
 }
 
-impl<T> ApiReply<T> {
-    pub async fn map<U, F: FnOnce(T) -> Fut, Fut: Future<Output = U>>(self, op: F) -> ApiReply<U> {
-        use ApiReply::*;
-        match self {
-            Ok(t) => Ok(op(t).await),
-            Err(e) => Err(e),
-            Created(s, t) => Created(s, op(t).await),
-        }
-    }
+// use futures::Future;
+// impl<T> ApiReply<T> {
+//     pub async fn map<U, F: FnOnce(T) -> Fut, Fut: Future<Output = U>>(self, op: F) -> ApiReply<U> {
+//         use ApiReply::*;
+//         match self {
+//             Ok(t) => Ok(op(t).await),
+//             Err(e) => Err(e),
+//             Created(s, t) => Created(s, op(t).await),
+//         }
+//     }
 
-    pub async fn and_then<U, F: FnOnce(T) -> Fut, Fut: Future<Output = ApiReply<U>>>(
-        self,
-        op: F,
-    ) -> ApiReply<U> {
-        use ApiReply::*;
-        match self {
-            Ok(t) | Created(_, t) => op(t).await,
-            Err(e) => Err(e),
-        }
-    }
-}
+//     pub async fn and_then<U, F: FnOnce(T) -> Fut, Fut: Future<Output = ApiReply<U>>>(
+//         self,
+//         op: F,
+//     ) -> ApiReply<U> {
+//         use ApiReply::*;
+//         match self {
+//             Ok(t) | Created(_, t) => op(t).await,
+//             Err(e) => Err(e),
+//         }
+//     }
+// }
 
 impl<T: Send + serde::Serialize> warp::Reply for ApiReply<T> {
     fn into_response(self) -> warp::reply::Response {
@@ -44,7 +44,7 @@ impl<T: Send + serde::Serialize> warp::Reply for ApiReply<T> {
             .into_response(),
             ApiReply::Created(location, value) => {
                 let reply = warp::reply::json(&value);
-                reply.into_response()
+                warp::reply::with_header(reply, "Location", location).into_response()
             }
         }
     }
@@ -52,8 +52,8 @@ impl<T: Send + serde::Serialize> warp::Reply for ApiReply<T> {
 
 #[derive(Clone, Debug, serde::Serialize, serde::Deserialize)]
 pub struct ErrorMessage {
-    code: u16,
-    error: String,
+    pub code: u16,
+    pub error: String,
 }
 
 impl ErrorMessage {
