@@ -12,7 +12,6 @@ use warp::Rejection;
 use super::api_reply::ApiReply;
 use super::api_reply::ErrorMessage;
 use crate::channel::rs_ecdsa::ChannelManager;
-use crate::channel::Channel;
 use crate::channel::ChannelDb;
 use crate::channel::ChannelId;
 use crate::http::messages::*;
@@ -50,17 +49,36 @@ pub fn routes(
 
     let post_channel = warp::post()
         .and(require_this(channel_manager.clone()))
+        .and(require_this(event_sender.clone()))
         .and(warp::path("channels"))
         .and(warp::body::json::<NewChannelReq>())
         .and_then(open_channel);
 
+    let get_channels = warp::get()
+        .and(require_this(channel_db.clone()))
+        .and(warp::path("channels"))
+        .and(warp::path::end())
+        .and_then(list_channels);
+
     let get_channel = warp::get()
         .and(require_this(channel_db.clone()))
-        .and(warp::path::param::<ChannelId>())
         .and(warp::path("channels"))
+        .and(warp::path::param::<ChannelId>())
         .and_then(channel_info);
 
-    get_root.or(post_channel).or(get_channel).or(new_peer)
+    let put_channel = warp::put()
+        .and(require_this(channel_manager.clone()))
+        .and(warp::path("channels"))
+        .and(warp::path::param::<ChannelId>())
+        .and(warp::body::json::<ChannelUpdate>())
+        .and_then(update_channel);
+
+    get_root
+        .or(post_channel)
+        .or(get_channels)
+        .or(get_channel)
+        .or(new_peer)
+        .or(put_channel)
 }
 
 fn require_this<T: Clone + Send + 'static>(
@@ -96,37 +114,35 @@ async fn connect(
         .unwrap_or(ApiReply::Err(ErrorMessage::internal_server_error())))
 }
 
-// async fn send_message(
-//     mut sender: mpsc::Sender<Event<Message>>,
-//     peer: Peer,
-//     message: Message,
-// ) -> Result<impl warp::Reply, Infallible> {
-//     let (notifier, on_sent) = oneshot::channel();
-//     let _ = sender
-//         .send(Event::SendMessageReq {
-//             peer,
-//             message: (message, Some(notifier)),
-//         })
-//         .await;
-
-//     Ok(on_sent
-//         .await
-//         .map(|_| warp::reply::with_status(warp::reply(), StatusCode::NO_CONTENT))
-//         .unwrap_or_else(|_e| {
-//             warp::reply::with_status(warp::reply(), StatusCode::FAILED_DEPENDENCY)
-//         }))
-// }
-
 async fn open_channel(
     channel_manager: CM,
+    mut event_sender: mpsc::Sender<Event<Message>>,
     new_channel: NewChannelReq,
 ) -> Result<ApiReply<NewChannelRes>, Infallible> {
     let mut channel_manager = channel_manager.lock().await;
     match channel_manager
-        .new_channel(new_channel.value, new_channel.peer)
+        .new_channel(new_channel.value, new_channel.peer.id())
         .await
     {
-        Ok(channel_id) => Ok(ApiReply::Ok(NewChannelRes { channel_id })),
+        Ok(new_channel_msg) => {
+            let channel_id = new_channel_msg.id;
+
+            Ok(
+                match Event::send_message(
+                    &mut event_sender,
+                    new_channel.peer,
+                    Message::RsEcdsaNewChannel(new_channel_msg),
+                )
+                .await
+                {
+                    Ok(()) => ApiReply::Ok(NewChannelRes { channel_id }),
+                    Err(e) => ApiReply::Err(
+                        ErrorMessage::from_status(http::StatusCode::FAILED_DEPENDENCY)
+                            .with_message(&e.to_string()),
+                    ),
+                },
+            )
+        }
         Err(e) => Ok(match e.downcast::<bdk::Error>() {
             Ok(e) => ApiReply::Err(
                 ErrorMessage::from_status(http::StatusCode::BAD_REQUEST)
@@ -135,12 +151,6 @@ async fn open_channel(
             Err(_) => ApiReply::Err(ErrorMessage::internal_server_error()),
         }),
     }
-}
-
-#[derive(serde::Serialize, serde::Deserialize)]
-struct GetChannel {
-    #[serde(flatten)]
-    channel: Channel,
 }
 
 async fn channel_info(
@@ -153,6 +163,36 @@ async fn channel_info(
         Err(e) => {
             error!("{}", e);
             Ok(ApiReply::Err(ErrorMessage::internal_server_error()))
+        }
+    }
+}
+
+async fn list_channels(channel_db: Db) -> anyhow::Result<ApiReply<GetChannels>, Infallible> {
+    match channel_db.list_channels().await {
+        Ok(channels) => Ok(ApiReply::Ok(GetChannels {
+            channels: channels.into_iter().map(|channel| channel.id).collect(),
+        })),
+        Err(e) => {
+            error!("{}", e);
+            Ok(ApiReply::Err(ErrorMessage::internal_server_error()))
+        }
+    }
+}
+
+async fn update_channel(
+    channel_manager: CM,
+    channel_id: ChannelId,
+    update: ChannelUpdate,
+) -> Result<ApiReply<ForceCloseChannelRes>, Infallible> {
+    let channel_manager = channel_manager.lock().await;
+    match update {
+        ChannelUpdate::ForceClose {} => {
+            match channel_manager.force_close_channel(channel_id).await {
+                Ok(tx) => Ok(ApiReply::Ok(ForceCloseChannelRes { tx })),
+                Err(e) => Ok(ApiReply::Err(
+                    ErrorMessage::internal_server_error().with_message(e.to_string()),
+                )),
+            }
         }
     }
 }

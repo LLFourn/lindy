@@ -5,6 +5,7 @@ pub enum ApiReply<T> {
     Ok(T),
     Err(ErrorMessage),
     Created(String, T),
+    NoContent,
 }
 
 // use futures::Future;
@@ -45,6 +46,10 @@ impl<T: Send + serde::Serialize> warp::Reply for ApiReply<T> {
             ApiReply::Created(location, value) => {
                 let reply = warp::reply::json(&value);
                 warp::reply::with_header(reply, "Location", location).into_response()
+            }
+            ApiReply::NoContent => {
+                warp::reply::with_status(warp::reply(), http::StatusCode::NO_CONTENT)
+                    .into_response()
             }
         }
     }

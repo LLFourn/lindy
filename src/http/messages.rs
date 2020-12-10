@@ -1,3 +1,6 @@
+use bdk::bitcoin::Transaction;
+
+use crate::channel::Channel;
 use crate::channel::ChannelId;
 use crate::p2p::conn::Peer;
 use crate::PeerId;
@@ -28,4 +31,26 @@ pub struct NewChannelRes {
 pub struct NewChannelReq {
     pub peer: Peer,
     pub value: u64,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+pub struct GetChannels {
+    pub channels: Vec<ChannelId>,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+pub struct GetChannel {
+    pub channel: Channel,
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(tag = "update", rename = "kebab-case")]
+pub enum ChannelUpdate {
+    ForceClose {},
+}
+
+#[derive(serde::Deserialize, serde::Serialize)]
+#[serde(tag = "update")]
+pub struct ForceCloseChannelRes {
+    pub tx: Transaction,
 }

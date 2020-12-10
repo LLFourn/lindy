@@ -1,5 +1,6 @@
 use crate::PeerId;
 use futures::channel::mpsc;
+use futures::channel::mpsc::UnboundedSender;
 use futures::channel::oneshot;
 use futures::Future;
 use futures::Sink;
@@ -32,7 +33,8 @@ pub enum Event<M> {
     },
     SendMessageReq {
         peer: Peer,
-        message: (M, Option<Notifier>),
+        message: M,
+        notifier: Option<Notifier>,
     },
     NewIncomingMessage {
         peer: Peer,
@@ -53,7 +55,8 @@ impl<M> Event<M> {
         event_sender
             .send(Event::SendMessageReq {
                 peer,
-                message: (message, Some(sender)),
+                message: message,
+                notifier: Some(sender),
             })
             .await
             .expect("receiver won't be dropped");
@@ -95,28 +98,30 @@ impl<M> Default for ConnectState<M> {
     }
 }
 
-pub struct EventHandler<M, F> {
+pub struct EventHandler<M> {
     peers: HashMap<PeerId, ConnectState<M>>,
     sender: mpsc::Sender<Event<M>>,
     connector: Connector,
-    msg_handler: F,
+    msg_sender: UnboundedSender<(Peer, M)>,
 }
 
-impl<M, Fut, F> EventHandler<M, F>
+impl<M> EventHandler<M>
 where
     M: Send + serde::Serialize + serde::de::DeserializeOwned + 'static,
-    Fut: Future<Output = ()> + Send + 'static,
-    F: FnMut(Peer, M) -> Fut + Send,
 {
     pub fn start(
         connector: Connector,
-        msg_handler: F,
-    ) -> (impl Future<Output = ()> + Send, mpsc::Sender<Event<M>>) {
+    ) -> (
+        impl Future<Output = ()> + Send,
+        mpsc::Sender<Event<M>>,
+        impl Stream<Item = (Peer, M)>,
+    ) {
         let (sender, mut receiver) = mpsc::channel(10);
+        let (msg_sender, msg_receiver) = mpsc::unbounded();
         let mut handler = EventHandler {
             peers: HashMap::default(),
             sender: sender.clone(),
-            msg_handler: msg_handler,
+            msg_sender,
             connector,
         };
         let fut = async move {
@@ -125,7 +130,7 @@ where
             }
         };
 
-        (fut, sender)
+        (fut, sender, msg_receiver)
     }
 
     fn handle_event(&mut self, event: Event<M>) {
@@ -143,10 +148,14 @@ where
                     }
                 }
             },
-            Event::SendMessageReq { peer, message } => match self.maybe_connect(peer) {
+            Event::SendMessageReq {
+                peer,
+                message,
+                notifier,
+            } => match self.maybe_connect(peer) {
                 ConnectState::Connected(outgoing_queue) => {
                     debug!("Using existing connection to send message to {}", peer);
-                    outgoing_queue.unbounded_send(message).unwrap();
+                    outgoing_queue.unbounded_send((message, notifier)).unwrap();
                 }
                 ConnectState::Connecting {
                     pending_messages, ..
@@ -155,11 +164,11 @@ where
                         "Currently connecting to {}, so putting message in queue",
                         peer
                     );
-                    pending_messages.push(message);
+                    pending_messages.push((message, notifier));
                 }
             },
             Event::NewIncomingMessage { peer, message } => {
-                tokio::spawn((self.msg_handler)(peer, message));
+                let _ = self.msg_sender.unbounded_send((peer, message));
             }
             Event::Disconnected { peer } => {
                 let removed = self.peers.remove(&peer.id());

@@ -1,19 +1,9 @@
-use crate::channel::ChannelId;
-use ecdsa_fun::adaptor::EncryptedSignature;
-use secp256kfun::Point;
+use crate::channel::rs_ecdsa::RsEcdsaAckNewChannel;
+use crate::channel::rs_ecdsa::RsEcdsaNewChannel;
 
 #[derive(serde::Serialize, serde::Deserialize, Debug, Clone)]
+#[serde(rename_all = "kebab-case", tag = "kind")]
 pub enum Message {
-    RsEcdsaNewChannel {
-        channel_id: ChannelId,
-        funding_satoshis: u64,
-        to_self_delay: u16,
-        feerate_per_kw: u32,
-        revocation_key: Point,
-    },
-    RsEcdsaAckNewChannel {
-        channel_id: ChannelId,
-        commit_sig: EncryptedSignature,
-        revocation_key: Point,
-    },
+    RsEcdsaNewChannel(RsEcdsaNewChannel),
+    RsEcdsaAckNewChannel(RsEcdsaAckNewChannel),
 }

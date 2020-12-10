@@ -15,6 +15,11 @@ impl ChannelDb for RwLock<InMemory> {
         let db = self.read().await;
         Ok(db.get_channel(channel_id))
     }
+
+    async fn list_channels(&self) -> anyhow::Result<Vec<Channel>> {
+        let db = self.read().await;
+        Ok(db.list_channels().await)
+    }
 }
 
 #[derive(Default)]
@@ -29,5 +34,9 @@ impl InMemory {
 
     pub fn get_channel(&self, channel_id: ChannelId) -> Option<Channel> {
         self.inner.get(&channel_id).map(Clone::clone)
+    }
+
+    async fn list_channels(&self) -> Vec<Channel> {
+        self.inner.values().map(Clone::clone).collect()
     }
 }

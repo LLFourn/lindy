@@ -14,7 +14,7 @@ anyhow = "1"
 toml = "0.5"
 # tokio = {  version = "0.3", features = ["macros", "rt", "sync", "net", "io-util"] }
 # tokio-util = { version = "0.5", features = ["codec"] }
-tokio = {  version = "0.2", features = ["macros", "rt-core"] }
+tokio = {  version = "0.2", features = ["macros", "rt-core", "rt-util"] }
 futures = "0.3"
 async-trait = "0.1"
 tokio-util = { version = "0.3", features = ["codec"] }
@@ -24,5 +24,7 @@ env_logger = "0.7"
 thiserror = "1.0"
 secp256kfun = { path = "../secp256kfun/secp256kfun", features = ["serde", "libsecp_compat"] }
 bdk = {  path = "../bdk", features = ["key-value-db", "esplora", "compiler", "async-interface"], default-features = false }
-ecdsa_fun = { path = "../secp256kfun/ecdsa_fun", features = ["serde"] }
+ecdsa_fun = { path = "../secp256kfun/ecdsa_fun", features = ["serde", "libsecp_compat"] }
 chacha20 = "0.6"
+rand = "0.7"
+sha2 = "0.9"

@@ -1,14 +1,14 @@
-use crate::bitcoin::util::psbt::PartiallySignedTransaction;
+use crate::bitcoin::util::psbt::PartiallySignedTransaction as Psbt;
 use crate::channel::ChannelId;
+use async_trait::async_trait;
 use bdk::bitcoin::OutPoint;
 use bdk::bitcoin::PublicKey;
+use bdk::bitcoin::Transaction;
 use bdk::blockchain::Blockchain;
 use bdk::database::BatchDatabase;
 use bdk::descriptor::Descriptor;
-use tokio::sync::Mutex;
-type Psbt = PartiallySignedTransaction;
-use async_trait::async_trait;
 use bdk::TxBuilder;
+use tokio::sync::Mutex;
 
 #[async_trait]
 pub trait Funder: Send + Sync + 'static {
@@ -35,9 +35,10 @@ impl<B: Blockchain + Send + 'static, D: BatchDatabase + Send + 'static> Funder
     }
 }
 
+#[derive(serde::Serialize, serde::Deserialize, Debug, Clone, PartialEq)]
 pub struct FundTx {
-    descriptor: Descriptor<PublicKey>,
-    psbt: Psbt,
+    pub descriptor: Descriptor<PublicKey>,
+    pub psbt: Psbt,
 }
 
 impl FundTx {
@@ -61,6 +62,26 @@ impl FundTx {
         OutPoint {
             txid: self.psbt.clone().extract_tx().txid(),
             vout: i as u32,
+        }
+    }
+
+    pub fn output_value(&self) -> u64 {
+        self.psbt.global.unsigned_tx.output[self.channel_id().vout as usize].value
+    }
+
+    pub fn into_psbt(self) -> Psbt {
+        self.psbt
+    }
+
+    pub fn matches(&self, tx: &Transaction) -> bool {
+        let channel_id = self.channel_id();
+        match tx.output.get(channel_id.vout as usize) {
+            Some(output) => {
+                tx.txid() == channel_id.txid
+                    && output.value == self.output_value()
+                    && output.script_pubkey == self.descriptor.script_pubkey()
+            }
+            None => false,
         }
     }
 }

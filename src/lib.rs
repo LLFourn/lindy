@@ -10,6 +10,7 @@ pub mod channel;
 pub mod funder;
 pub mod http;
 pub mod keychain;
+pub mod monitor;
 pub mod p2p;
 pub mod server_bundle;
 pub use bdk::{bitcoin, reqwest};

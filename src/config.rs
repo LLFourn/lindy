@@ -37,16 +37,15 @@ impl Config {
             Some(wallet_config) => {
                 let database = sled::open(wallet_config.database.as_str())?;
                 let tree = database.open_tree("wallet")?;
-                let blockchain = AnyBlockchain::from_config(&self.blockchain)?;
-                let wallet =
-                    bdk::Wallet::new(
-                        wallet_config.descriptor.clone(),
-                        None,
-                        Network::Regtest,
-                        tree,
-                        blockchain,
-                    )
-                    .await?;
+                let blockchain = self.get_blockchain()?;
+                let wallet = bdk::Wallet::new(
+                    wallet_config.descriptor.clone(),
+                    None,
+                    Network::Regtest,
+                    tree,
+                    blockchain,
+                )
+                .await?;
 
                 wallet.sync(blockchain::log_progress(), None).await?;
 
@@ -54,6 +53,10 @@ impl Config {
             }
             None => Ok(None),
         }
+    }
+
+    pub fn get_blockchain(&self) -> anyhow::Result<AnyBlockchain> {
+        Ok(AnyBlockchain::from_config(&self.blockchain)?)
     }
 }
 

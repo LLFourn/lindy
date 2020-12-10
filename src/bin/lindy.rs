@@ -34,7 +34,16 @@ async fn main() -> anyhow::Result<()> {
     info!("starting http on: {}", config.http.listen);
     let http_listener = tokio::net::TcpListener::bind(config.http.listen).await?;
 
-    lindy::server_bundle::start(config.seed.clone(), p2p_listener, http_listener, funder).await?;
+    let blockchain = config.get_blockchain()?;
+
+    lindy::server_bundle::start(
+        config.seed.clone(),
+        p2p_listener,
+        http_listener,
+        funder,
+        blockchain,
+    )
+    .await?;
 
     Ok(())
 }
